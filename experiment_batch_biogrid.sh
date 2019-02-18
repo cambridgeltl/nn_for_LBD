@@ -8,6 +8,9 @@ do_lp=True
 #options: 'open_discovery_with_aggregators_and_accumulators' 'open_discovery_without_aggregators_and_accumulators'
 lbd_method='open_discovery_with_aggregators_and_accumulators'
 
+dev_eval=True
+test_eval=True
+
 echo "\n----------------------------------------------------------"
 echo "----------------------------------------------------------"
 echo "----------------------------------------------------------"
@@ -38,12 +41,12 @@ do
         -dif "${datapath}/discoverable_edges_biogrid.json" -ts '200000' \
         -tf "train_${embeddingsshortname}_${lbd_method}.tsv" -df "devel_${embeddingsshortname}_${lbd_method}.tsv" \
         -tef "test_${embeddingsshortname}_${lbd_method}.tsv" -vf "vertices_${embeddingsshortname}_${lbd_method}.txt" \
-        -tegf "test_adj_mat_${embeddingsshortname}.line" --B-filename "b_${embeddingsshortname}_${lbd_method}.txt" \
+        -tegf "test_adj_mat_${embeddingsshortname}.edgelist" --B-filename "b_${embeddingsshortname}_${lbd_method}.txt" \
         --C-filename "Cs_${embeddingsshortname}_${lbd_method}.txt" --lbd_method "${lbd_method}"
     fi
 
     #create representations
-    for method in line #node2vec #line
+    for method in node2vec #node2vec #line
     do
         echo "\n----------------------------------------------------------"
         echo "----------------------------------------------------------"
@@ -70,7 +73,7 @@ do
             then
                 #Create the modified embeddings to change from node indices to node names
                 echo "Creating modified embeddings."
-                python 'create_modified_embeddings.py' -f "test_${embeddingsshortname}.embeddings" -o  "test_modified_${embeddingsshortname}.embeddings" -vf "vertices_${embeddingsshortname}.txt"
+                python 'create_modified_embeddings.py' -f "test_${embeddingsshortname}.embeddings" -o  "test_modified_${embeddingsshortname}.embeddings" -vf "vertices_${embeddingsshortname}_${lbd_method}.txt"
             fi
 
             #Convert the embeddings to .bin format
@@ -85,12 +88,11 @@ do
             devel_filename="${datapath}/dev.tsv"
             devel_unformed_filename="${datapath}/reachable_dev_top_1000.json"
             devel_data="devel_${embeddingsshortname}_${lbd_method}.tsv"
-
             eval_filename="${datapath}/test.tsv"
             unformed_filename="${datapath}/reachable_test_top_1000.json"
             test_data="test_${embeddingsshortname}_${lbd_method}.tsv"
 
-            for combination_method in hadamard concatenate weighted_l2 average weighted_l1
+            for combination_method in concatenate hadamard concatenate weighted_l2 average weighted_l1
             do
                 echo "\n----------------------------------------------------------"
                 echo "Training convnet with ${combination_method}."
@@ -101,7 +103,7 @@ do
                   python 'Models/MLP/pytorch/neural_link_scorer_2node_input_no_cases.py' --train_data "train_${embeddingsshortname}_${lbd_method}.tsv" \
                     --devel_data "${devel_data}" --test_data "test_${embeddingsshortname}_${lbd_method}.tsv" \
                     --test_embeddings_data "test_modified_${embeddingsshortname}.embeddings.bin" --eval_filename "${eval_filename}" --unformed_filename "${unformed_filename}"  \
-                    --devel_filename "${devel_filename}" --devel_unformed_filename "${devel_unformed_filename}" --train_epochs 150 \
+                    --devel_filename "${devel_filename}" --devel_unformed_filename "${devel_unformed_filename}" --train_epochs 1 \
                     --combination_method ${combination_method} --experiment_name "${dataset}_${combination_method}_${experiment_run}" \
                      --lbd_type "open_discovery"
                 elif [ $lbd_method = 'open_discovery_without_aggregators_and_accumulators' ]

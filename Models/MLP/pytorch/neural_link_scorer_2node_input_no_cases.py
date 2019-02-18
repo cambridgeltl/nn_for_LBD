@@ -7,6 +7,8 @@ import re
 import pandas as pd
 import numpy as np
 
+from collections import Counter
+
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -21,12 +23,12 @@ COLUMNS = ["node1", "node2"]
 LABEL_COLUMN = "label"
 
 # Device configuration
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Hyper parameters
 num_classes = 2
 batch_size = 100
-learning_rate = 0.0001
+learning_rate = 0.0001 #0.00001
 
 PATH = "saved_models/best_model.pth"
 CUR_PATH = "saved_models/cur_model.pth"
@@ -241,7 +243,7 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, test_embeddi
     print("\nTraining model...")
     total_step = len(train_loader)
     best_info = {'max_mmrr': 0.0}
-    evaluate_every = 15
+    evaluate_every = 25
     for epoch in range(train_epochs):
         for i, (train_x, labels) in enumerate(train_loader):
             labels = labels.type(torch.LongTensor)
@@ -291,8 +293,8 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, test_embeddi
                         predicted, _ = torch.max(outputs.data, 1)
                         predictions.extend([tensor.item() for tensor in predicted])
 
-                        for link, pred in zip(original_labels, predictions):
-                            link_score_lst[link] = pred
+                    for link, pred in zip(original_labels, predictions):
+                        link_score_lst[link] = pred
 
                 c_scores = {}
                 devel_cs = set(chosen_As[a] + negative_c_lst[a])
@@ -360,14 +362,18 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, test_embeddi
                         sorted_scores = sorted(y_scores, reverse=True)
 
                         true_ranks = []
+                        scores_cnter = Counter(y_scores)
                         true_c_lst = chosen_As[a]
                         for tc, ts in zip(true_c_lst, true_scores):
-                            true_ranks.append((sorted_scores.index(ts) + 1, ts, tc))
+                            #true_ranks.append((sorted_scores.index(ts) + 1, ts, tc))
+                            ts_index = sorted_scores.index(ts)
+                            #Get median of range
+                            true_ranks.append((( ((ts_index + 1) + (ts_index + scores_cnter[ts]))/2 ), ts))
 
                         mrr = np.mean([1.0/tr_[0] for tr_ in true_ranks])
                         mrr_total[agg][acc] += mrr
                 if a_ind % 500 == 0:
-                    print("{} devel completed.".format(a_ind))
+                    print("{} devel completed at {}.".format(a_ind, datetime.now()))
 
             for agg in ['max', 'min', 'avg']:
                 for acc in ['sum', 'max']:
@@ -395,7 +401,7 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, test_embeddi
 
     print("Reading data...")
     test_file_name = test_data
-    df_test = pd.read_table(test_file_name, dtype={'train_nodes':str})
+    df_test = pd.read_table(test_file_name, dtype={'node1':str, 'node2':str})
 
     # remove NaN elements
     df_test = df_test.dropna(how='any', axis=0)
@@ -420,23 +426,21 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, test_embeddi
         added_links[a] = {}
         negative_c_lst[a] = []
     #Filter test for chosen As which formed (True positives)
-
     for ind, row in enumerate(df_test.itertuples()):
         node1 = row.node1
         node2 = row.node2
-        if node1 in chosen_As.keys():
+        if node1 in chosen_As:
             a_dfs[node1]['node1'].append(row.node1)
             a_dfs[node1]['node2'].append(row.node2)
             a_dfs[node1]['label'].append(row.label)
             added_links[node1]["{}::{}".format(row.node1,row.node2)] = 1
-        if node2 in chosen_As.keys():
+        if node2 in chosen_As:
             a_dfs[node2]['node1'].append(row.node1)
             a_dfs[node2]['node2'].append(row.node2)
             a_dfs[node2]['label'].append(row.label)
             added_links[node2]["{}::{}".format(row.node1,row.node2)] = 1
 
     #Add unformed edges for the chosen As (True negatives)
-    #negative_c_lst = {}
     a_c_regex = r"'(.*?)'"
     unformed_edges = 0
     if 'json' in unformed_filename:
@@ -499,8 +503,8 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, test_embeddi
                 predicted, _ = torch.max(outputs.data, 1)
                 predictions.extend([tensor.item() for tensor in predicted])
 
-                for link, pred in zip(original_labels, predictions):
-                    link_score_lst[link] = pred
+            for link, pred in zip(original_labels, predictions):
+                link_score_lst[link] = pred
 
         c_scores = {}
         test_cs = set(chosen_As[a] + negative_c_lst[a])
@@ -555,6 +559,9 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, test_embeddi
         y_true = [1.0 if c_ in chosen_As[a] else 0.0 for c_ in test_cs] #gold
         for agg in ['max', 'min', 'avg']:
             for acc in ['sum', 'max']:
+                total_tied_golds = 0
+                total_untied_golds = 0
+
                 scores = [c_scores[c_][agg][acc] for c_ in test_cs]
                 score_label_lst = []
                 for score, label in zip(scores, y_true):
@@ -569,8 +576,17 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, test_embeddi
 
                 true_ranks = []
                 true_c_lst = chosen_As[a]
+                scores_cnter = Counter(y_scores)
+
                 for tc, ts in zip(true_c_lst, true_scores):
-                    true_ranks.append((sorted_scores.index(ts) + 1, ts, tc))
+                    if scores_cnter[ts] == 1:
+                        true_ranks.append((sorted_scores.index(ts) + 1, ts, tc))
+                        total_untied_golds += 1
+                    else:
+                        total_tied_golds += 1
+                        ts_index = sorted_scores.index(ts)
+                        #Get median of range
+                        true_ranks.append((( ((ts_index + 1) + (ts_index + scores_cnter[ts]))/2 ), ts))
 
                 ap = average_precision_score(y_true, y_scores, average='micro')
                 mr = np.mean([tr_[0] for tr_ in true_ranks])
@@ -583,7 +599,8 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, test_embeddi
                 h_at_r_total[agg][acc] += hits_at_R
 
                 tp = len([x for x in y_true if x > 0.0])
-                a_ap[agg][acc] += "{}. A: {}, AP: {}. MR: {}. MRR: {}. Hits at R: {}. TP: {}/{}. \nRanks: {}\n\n".format(a_ind + 1, a, ap, mr, mrr, hits_at_R, tp, len(predictions), sorted(true_ranks, key= lambda x: x[0]))
+                a_ap[agg][acc] += "{}. A: {}, AP: {}. MR: {}. MRR: {}. Hits at R: {}. TP: {}/{}. Gold tie/untie: {}/{} \nRanks: {}\n\n".format(a_ind + 1, a, ap, mr, mrr,
+                    hits_at_R, tp, len(test_cs),  total_tied_golds, total_untied_golds, sorted(true_ranks, key= lambda x: x[0]))
         if a_ind % 500 == 0:
             print("{} test completed at {}.".format(a_ind, datetime.now()))
 
@@ -594,7 +611,7 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, test_embeddi
             mean_mrr = mrr_total[agg][acc]/len(a_dfs.keys())
             mean_hits_at_r = h_at_r_total[agg][acc]/len(a_dfs.keys())
 
-            map_o = "AGG: {}\tACC: {}\nMean MAP was: {}. Mean mean-rank was: {}. MRR: {}. Mean Hits at R: {}".format(agg, acc, mean_map, mean_mr, mean_mrr, mean_hits_at_r)
+            map_o = "AGG: {}\tACC: {}\nMean MAP was: {}. Mean mean-rank was: {}. MRR: {}. Mean Hits at R: {}.".format(agg, acc, mean_map, mean_mr, mean_mrr, mean_hits_at_r)
             map_output = "{}\n{}\n{}\n\n{}".format(experiment_name, best_info, map_o, a_ap[agg][acc])
             print(map_o)
 

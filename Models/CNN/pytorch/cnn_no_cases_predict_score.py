@@ -15,20 +15,20 @@ from torch.utils.data import Dataset, DataLoader
 
 import wordvecdata as wvd
 from sklearn.metrics import average_precision_score
+from datetime import datetime
 
 COLUMNS = ["node1", "node2", "node3"]
 LABEL_COLUMN = "label"
 
 # Device configuration
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Hyper parameters
+# Hyper parameters. TODO pass this from command line
 PATH = "saved_models/best_biogrid_model.pth"
 CUR_PATH = "saved_models/cur_biogrid_model.pth"
-#TODO pass these from command line
 num_classes = 2
 batch_size = 100
-learning_rate = 0.0001
+learning_rate = 0.00001
 frame_link_amt = 50
 conv_height = 7
 
@@ -89,7 +89,8 @@ def get_input(df, embeddings,index_map, combination_method='hadamard', data_purp
     assert(combination_method in ['hadamard','average', 'weighted_l1', 'weighted_l2', 'concatenate']), "Invalid combination Method %s" % combination_method
     padding = np.array([0.0] * dim_size, dtype='float32')
 
-    print("Combining with {}.".format(combination_method))
+    if data_purpose != 'eval':
+        print("Combining with {}.".format(combination_method))
 
     total_real_links = 0
     max_real_links = 0
@@ -133,6 +134,7 @@ def get_input(df, embeddings,index_map, combination_method='hadamard', data_purp
         feature_cols = {}
         column_tensors = []
         for i in COLUMNS:
+            #Ability to weight columns and increase numerical values (esp. for LINE)
             if i == 'node1':
                 col_weight = 10.0
             elif i == 'node2':
@@ -178,10 +180,11 @@ def get_input(df, embeddings,index_map, combination_method='hadamard', data_purp
         features.append(np.expand_dims(updated_instance_features, axis=0))
         total_rows = ind
 
-    print("\nReal links in conv window stats: Range from {}-{} with a mean of {}.".format(min_real_links, max_real_links,
+    if data_purpose != 'eval':
+        print("\nReal links in conv window stats: Range from {}-{} with a mean of {}.".format(min_real_links, max_real_links,
                                                             total_real_links/max(total_rows, 1)))
 
-    if data_purpose == 'test':
+    if data_purpose in ['test', 'eval']:
         return features, np.array([1 if val > 0 else 0 for val in label_values if val != -1]), label_values, c_lst
 
     return features, np.array([val * 100 for val in label_values if val != -1])
@@ -235,11 +238,11 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, train_embedd
     df_devel = df_devel.dropna(how='any', axis=0)
     #Get inputs
     devel_x, dev_labels = get_input(df_devel, weights, index_map, combination_method)
-    devel_loader = torch.utils.data.DataLoader(dataset=LinksDataset(devel_x, dev_labels), batch_size=batch_size, shuffle=True)
+    devel_loader = torch.utils.data.DataLoader(dataset=LinksDataset(devel_x, dev_labels), batch_size=batch_size, shuffle=False)
     dev_pos_labels = [l_ for l_ in dev_labels if l_ != 0]
     #End Loading devel set
     #Start prepping dev data
-    #Initial testing will select 1st 100 egs in devel/test data instead of random selection. Read these lines
+    #Initial testing will select 1st 1000 egs in devel/test data from shuffled file 9gives randomness that is easily replicated across all methods). Read these lines
     with open(devel_filename) as inp_file:
         chosen_As = {}
         for ind, line in enumerate(csv.reader(inp_file, delimiter='\t')): #quoting=csv.QUOTE_NONE - If req to make data work, examine data
@@ -302,7 +305,7 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, train_embedd
     print("\nTraining model...")
     total_step = len(train_loader)
     best_info = {'max_mmrr':0}
-    evaluate_every = 5
+    evaluate_every = 25
     for epoch in range(train_epochs):
         for i, (train_x, labels) in enumerate(train_loader):
             labels = labels.type(torch.FloatTensor)
@@ -337,21 +340,28 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, train_embedd
             # Test the model
             lmodel.eval()  # eval mode (batchnorm uses moving mean/variance instead of mini-batch mean/variance)
 
+            total_avg_score_ties = 0.0
+            total_tied_golds = 0
+            total_untied_golds = 0
+            tie_lst = []
             for a_ind, (a, df_test_a) in enumerate(a_dfs.iteritems()):
-                test_x, test_labels, original_labels, c_lst = get_input(df_test_a, weights, index_map, combination_method, data_purpose='test')
+                test_x, test_labels, original_labels, c_lst = get_input(df_test_a, weights, index_map, combination_method, data_purpose='eval')
                 test_loader = torch.utils.data.DataLoader(dataset=LinksDataset(test_x, test_labels), batch_size=batch_size, shuffle=False)
 
                 with torch.no_grad():
                     predictions = []
+                    labels = []
                     pred_lab_lst = []
+                    inp_pred_lst = []
                     for test_links, test_labels in test_loader:
                         test_links = test_links.to(device)
                         outputs = lmodel(test_links)
                         predicted, _ = torch.max(outputs.data, 1)
                         predictions.extend([tensor.item() for tensor in predicted])
+                        labels.extend([tensor.item() for tensor in test_labels])
 
-                        for pred, lab in zip(predictions, [tensor.item() for tensor in test_labels]):
-                            pred_lab_lst.append((pred, lab))
+                    for pred, lab in zip(predictions, labels):
+                        pred_lab_lst.append((pred, lab))
 
                 sorted_pred_lab_lst = sorted(pred_lab_lst, key=lambda x: x[0], reverse=True)
 
@@ -362,17 +372,32 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, train_embedd
                 true_scores = [y_scores[ind] for ind in true_inds]
                 sorted_scores = sorted(y_scores, reverse=True)
                 true_ranks = []
-
+                scores_cnter = Counter(y_scores)
+                true_c_scores = [s_ for s_ in scores_cnter.keys() if s_ in true_scores]
+                avg_score_ties = sum(true_c_scores)/float(len(true_c_scores))
+                total_avg_score_ties += avg_score_ties
                 for tc, ts in zip(c_lst, true_scores):
-                    true_ranks.append((sorted_scores.index(ts) + 1, ts, tc))
+                    if scores_cnter[ts] == 1:
+                        true_ranks.append((sorted_scores.index(ts) + 1, ts, tc))
+                        total_untied_golds += 1
+                    else:
+                        tie_lst.append((tc, ts, scores_cnter[ts]))
+                        total_tied_golds += 1
+                        ts_index = sorted_scores.index(ts)
+                        #true_ranks.append((random.randint(ts_index + 1, ts_index + scores_cnter[ts]), ts))
+                        #Get median of range
+                        true_ranks.append((( ((ts_index + 1) + (ts_index + scores_cnter[ts]))/2 ), ts))
 
                 mrr = np.mean([1.0/tr_[0] for tr_ in true_ranks])
                 mrr_total += mrr
 
                 tp = len([x for x in y_true if x > 0.0])
                 if a_ind % 500 == 0:
-                    print("{} devel completed.".format(a_ind))
+                    print("{} devel completed at {}.".format(a_ind, datetime.now()))
+
             mean_mrr = mrr_total/len(a_dfs.keys())
+            print("Total tied gold ranks: {}".format(total_tied_golds))
+            print("Total untied gold ranks: {}".format(total_untied_golds))
 
             map_o = "MRR: {}.".format(mean_mrr)
             map_output = "{}\n{}\n\n{}".format(experiment_name, map_o, map_output)
@@ -385,6 +410,7 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, train_embedd
                 best_info['max_mmrr'] = mean_mrr
                 best_info['loss_at_best'] = loss.item()
                 best_info['epoch'] = epoch + 1
+                best_info['tied_untied'] = "{}/{}".format(total_tied_golds, total_untied_golds)
             ###End Evaluate on the dev set
 
     print("\nTrain complete. Best info: {}".format(best_info))
@@ -466,21 +492,26 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, train_embedd
     # Test the model
     model.eval()  # eval mode (batchnorm uses moving mean/variance instead of mini-batch mean/variance)
 
+    total_avg_score_ties = 0.0
+    total_tied_golds = 0
+    total_untied_golds = 0
     for a_ind, (a, df_test_a) in enumerate(a_dfs.iteritems()):
         test_x, test_labels, original_labels, c_lst = get_input(df_test_a, weights, index_map, combination_method, data_purpose='test')
         test_loader = torch.utils.data.DataLoader(dataset=LinksDataset(test_x, test_labels), batch_size=batch_size, shuffle=False)
 
         with torch.no_grad():
             predictions = []
+            labels = []
             pred_lab_lst = []
             for test_links, test_labels in test_loader:
                 test_links = test_links.to(device)
                 outputs = model(test_links)
                 predicted, _ = torch.max(outputs.data, 1)
                 predictions.extend([tensor.item() for tensor in predicted])
+                labels.extend([tensor.item() for tensor in test_labels])
 
-                for pred, lab in zip(predictions, [tensor.item() for tensor in test_labels]):
-                    pred_lab_lst.append((pred, lab))
+            for pred, lab in zip(predictions, labels):
+                pred_lab_lst.append((pred, lab))
 
         sorted_pred_lab_lst = sorted(pred_lab_lst, key=lambda x: x[0], reverse=True)
 
@@ -491,9 +522,19 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, train_embedd
         true_scores = [y_scores[ind] for ind in true_inds]
         sorted_scores = sorted(y_scores, reverse=True)
         true_ranks = []
-
+        scores_cnter = Counter(y_scores)
+        true_c_scores = [s_ for s_ in scores_cnter.keys() if s_ in true_scores]
+        avg_score_ties = sum(true_c_scores)/float(len(true_c_scores))
+        total_avg_score_ties += avg_score_ties
         for tc, ts in zip(c_lst, true_scores):
-            true_ranks.append((sorted_scores.index(ts) + 1, ts, tc))
+            if scores_cnter[ts] == 1:
+                true_ranks.append((sorted_scores.index(ts) + 1, ts, tc))
+                total_untied_golds += 1
+            else:
+                total_tied_golds += 1
+                ts_index = sorted_scores.index(ts)
+                #Get median of range
+                true_ranks.append((( ((ts_index + 1) + (ts_index + scores_cnter[ts]))/2 ), ts))
 
         ap = average_precision_score(y_true, y_scores, average='micro')
         mr = np.mean([tr_[0] for tr_ in true_ranks])
@@ -515,7 +556,11 @@ def train_and_eval(train_epochs, train_data, devel_data, test_data, train_embedd
     mean_mrr = mrr_total/len(a_dfs.keys())
     mean_hits_at_r = h_at_r_total/len(a_dfs.keys())
 
-    map_o = "Mean MAP was: {}. Mean mean-rank was: {}. MRR: {}. Mean Hits at R: {}".format(mean_map, mean_mr, mean_mrr, mean_hits_at_r)
+    print("Total average score ties: {}".format(total_avg_score_ties/len(a_dfs)))
+    print("Total tied gold ranks: {}".format(total_tied_golds))
+    print("Total untied gold ranks: {}".format(total_untied_golds))
+
+    map_o = "Mean MAP was: {}. Mean mean-rank was: {}. MRR: {}. Mean Hits at R: {}. Tied/untied: {}/{}".format(mean_map, mean_mr, mean_mrr, mean_hits_at_r, total_tied_golds, total_untied_golds)
     map_output = "{}\n{}\n{}\n\n{}".format(experiment_name, best_info, map_o, map_output)
     print(map_o)
 
@@ -685,6 +730,7 @@ if __name__ == "__main__":
       type=str,
       help='Year at which to use data until. Ignore all links after that year.'
   )
+
   parser.add_argument(
       "--train_epochs",
       type=int,

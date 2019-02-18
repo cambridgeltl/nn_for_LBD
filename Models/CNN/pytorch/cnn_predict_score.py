@@ -14,12 +14,11 @@ COLUMNS = ["node1", "node2", "node3"]
 LABEL_COLUMN = "label"
 
 # Device configuration
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Hyper parameters
-#TODO pass these from command line
-batch_size = 100
-learning_rate = 0.0001
+batch_size = 100 #TODO pass this from command line
+learning_rate = 0.00001
 frame_link_amt = 50
 conv_height = 7
 

@@ -146,17 +146,8 @@ def create_adjmat(neighbours_data, vertices_filename, test_graph_filename, all_d
             vertices[key] = str(node_index)
     print("\nFor creating adjacency matrix, %s vertices read." % len(vertices))
 
-    if graph_format == 'adjlist':
-        #format of deepwalk which doesn't allow weights
-        for key, value in neighbours_data.iteritems():
-            if len(value) > 0:
-                test_output_cnt += 1
-                test_output += "%s %s\n" % (vertices[key], ' '.join([vertices[v] for v in value]))
-            else:
-                test_output += "%s\n" % (key)
-    elif graph_format == 'edgelist':
+    if graph_format == 'edgelist':
         #format of node2vec, support weights
-        print("edglist")
         for key, value in neighbours_data.iteritems():
             if len(value) > 0:
                 for node_edge in value:
@@ -312,11 +303,11 @@ def read_open_discovery_evaluation_convnet(dev_filename, test_filename, neighbou
                                 c_neighbours = set(neighbours_data[c] + future_neighbours_data[c])
                                 score = len(a_neighbours_fut.intersection(c_neighbours)) / float(len(a_neighbours_fut.union(c_neighbours)))
                             elif c in future_neighbours_data:
-                                #not in both, check futures only
+                                #not in both and so in futures only
                                 c_neighbours = set(future_neighbours_data[c])
                                 score = len(a_neighbours_fut.intersection(c_neighbours)) / float(len(a_neighbours_fut.union(c_neighbours)))
                             elif c in neighbours_data:
-                                #Not in both, check pre cut-off neighbours only
+                                #Not in both so in pre cut-off neighbours only
                                 c_neighbours = set(neighbours_data[c])
                                 score = len(a_neighbours_fut.intersection(c_neighbours)) / float(len(a_neighbours_fut.union(c_neighbours)))
 
@@ -363,6 +354,152 @@ def read_open_discovery_evaluation_convnet(dev_filename, test_filename, neighbou
             b_file.close()
 
     return dev_data, test_data
+
+def add_reachable_edges(dev_data, test_data, neighbours_data, out_devel_filename, out_test_filename, all_data):
+
+    dev_entites = list(set([ent_ for link in dev_data.keys() for ent_ in link.split('::')]))
+    test_entites = list(set([ent_ for link in test_data.keys() for ent_ in link.split('::')]))
+    print("There are {} entities in dev and {} entities in train.".format(len(dev_entites), len(test_entites)))
+
+    already_done = {}
+    dev_output = '\n'
+    test_output = '\n'
+    for eval_data, eval_out_file in zip([dev_data, test_data], [out_devel_filename, out_test_filename]):
+        total_eval_data = len(eval_data)
+        ten_percent = int(0.1 * total_eval_data)
+        for ind, eval_link in enumerate(eval_data):
+            if ind % ten_percent <= 5:
+                print("{} ({} %) eval links processed at {}.".format(ind, ind/float(total_eval_data), datetime.now()))
+
+            a = eval_link.split('::')[0]
+            a_neighbours = list(set(neighbours_data[a]))
+
+            #Start sorting Bs in chronological order
+            sorted_b_lst = []
+
+            for b in a_neighbours:
+                if "{}::{}".format(a,b) in all_data:
+                    ab = "{}::{}".format(a,b)
+                elif "{}::{}".format(b,a) in all_data:
+                    ab = "{}::{}".format(b,a)
+                else:
+                    print("ERROR: unknown key: {}::{}".format(a,b))
+
+                sorted_b_lst.append((b, all_data[ab]))
+            sorted_b_lst = sorted(sorted_b_lst, key = lambda x: x[1])
+            sorted_b_lst = [tup_[0] for tup_ in sorted_b_lst]
+            a_neighbours = sorted_b_lst
+            #End sorting Bs in chronological order
+
+            for b in a_neighbours[:75]: #hop 1
+                for c in set(neighbours_data[b]): #hop 2
+                    if c == a or c in a_neighbours:
+                        continue
+
+                    ac = "{}::{}".format(a,c)
+                    ca = "{}::{}".format(c,a)
+                    if ac in already_done or ca in already_done:
+                        continue
+
+                    b_lst = set(neighbours_data[a]).intersection(set(neighbours_data[c]))
+
+                    conv_frame = ""
+                    for ind, b in enumerate(b_lst):
+                       conv_frame += "{}::{}::{}".format(a, b, c)
+                       if ind < len(b_lst) - 1:
+                           conv_frame += "-"
+
+                    if ac not in dev_data and ac not in test_data and ac not in already_done:
+                        already_done[ac] = 1
+                        already_done[ca] = 1
+                        if a in dev_entites or c in dev_entites:
+                            dev_output += "{}\t0.0\n".format(conv_frame)
+                        if a in test_entites or c in test_entites:
+                            test_output += "{}\t0.0\n".format(conv_frame)
+
+            for eval_output, eval_out_file in zip([dev_output, test_output], [out_devel_filename, out_test_filename]):
+                out_file = open(eval_out_file, 'a')
+                out_file.write(eval_output)
+                out_file.close()
+                eval_output = '\n'
+
+def read_discoverable_edges(filename, dev_data, test_data, neighbours_data, out_devel_filename, out_test_filename):
+    #determine what entities are in dev and test
+    dev_entites = list(set([ent_ for link in dev_data.keys() for ent_ in link.split('::')]))
+    test_entites = list(set([ent_ for link in test_data.keys() for ent_ in link.split('::')]))
+    print("There are {} entities in dev and {} entities in train.".format(len(dev_entites), len(test_entites)))
+
+    discoverables = {}
+    ac_lst = {}
+    if 'json' in filename:
+        with open(filename) as f:
+            data = json.load(f)
+            edges = data['edges']
+        print("There are {} discoverable edges.".format(len(edges)))
+        for edge in edges:
+            a = edge['A'].replace(' ', '_').replace('-', '_')
+            c = edge['C'].replace(' ', '_').replace('-', '_')
+
+            if a in discoverables:
+                discoverables[a].append(c)
+            else:
+                discoverables[a] = [c]
+
+            ac_lst["{}::{}".format(a,c)] = 1
+            ac_lst["{}::{}".format(c,a)] = 1
+
+    c_lens = [len(c_lst) for c_lst in discoverables.values()]
+    print("There were {} As with average {} Cs.".format(len(discoverables), sum(c_lens)/float(len(c_lens))))
+
+    unformed_dev = []
+    unformed_test = []
+    for dev_link in dev_data:
+        if dev_link not in ac_lst:
+            unformed_dev.append(dev_link)
+    for test_link in test_data:
+        if test_link not in ac_lst:
+            unformed_test.append(test_link)
+    print("There are {} links in dev and {} links in test. For a total of {} eval links. set {}".format(len(dev_data), len(test_data), len(dev_data) + len(test_data), set(dev_data.keys() + test_data.keys())))
+    print("There were {} unformed links in dev and {} unformed links in test.".format(len(unformed_dev), len(unformed_test)))
+    all_unformed = set(unformed_dev + unformed_test)
+    print("There are {} unformed links in all of eval.".format(len(all_unformed)))
+
+    #put discoverables into format of train/dev/test data, sort into dev or test and add to the relvant files
+    dev_discoverables = {}
+    test_discoverables = {}
+    for a, c_lst in discoverables.iteritems():
+        for c in c_lst:
+            ac = "{}::{}".format(a,c)
+            if ac not in dev_data and ac not in test_data:
+                ac = "{}::{}".format(c,a)
+            if ac not in dev_data and ac not in test_data:
+                print("No link between {} and {} in eval data.".format(a, c))
+
+            b_lst = set(neighbours_data[a]).intersection(set(neighbours_data[c]))
+
+            conv_frame = ""
+            for ind, b in enumerate(b_lst):
+                conv_frame += "{}::{}::{}".format(a, b, c)
+                if ind < len(b_lst) - 1:
+                    conv_frame += "-"
+
+            if ac not in dev_data and ac not in test_data:
+                if a in dev_entites or c in dev_entites:
+                    dev_discoverables[conv_frame] = 0.0
+                if a in test_entites or c in test_entites:
+                    test_discoverables[conv_frame] = 0.0
+    print("{} unformed links added to dev. {} unformed links added to test.".format(len(dev_discoverables), len(test_discoverables)))
+
+
+    for data, out_filename in zip([dev_discoverables, test_discoverables], [out_devel_filename, out_test_filename]):
+        output = '\n'
+        for test_frame, score_ in data.iteritems():
+            output += "{}\t{}\n".format(test_frame, score_)
+        test_file = open(out_filename, 'a')
+        test_file.write(output)
+        test_file.close()
+
+    return discoverables
 
 def create_open_discovery_train(neighbours_data, test_hops, size, neg_ratio, train_filename):
     #TODO: add some check of size to make sure function doesn't get stuck in infinite loop
@@ -599,11 +736,11 @@ def main(argv):
     all_data, neighbours_data, future_neighbours_data = read_data(args.input_train_file, args.col_labels, args.col_indices, int(cutoff_year))
 
     #create adjacency matrix
+    #Temporary comment out. Undo before code release!
     create_adjmat(neighbours_data, args.vertices_filename, args.test_graph_filename, all_data)
     print("Setting up {} LBD.".format(args.lbd_method))
     development, test = read_open_discovery_evaluation(args.input_devel_file, args.input_test_file, neighbours_data, future_neighbours_data, args.B_filename, args.C_filename,
                                                        args.devel_filename, args.test_filename, all_data)
-
     test_hops = {}
     test_hops.update(development)
     test_hops.update(test)
@@ -614,5 +751,6 @@ def main(argv):
     elif args.lbd_method == 'open_discovery_without_aggregators_and_accumulators':
         #create train set and format for convnet
         train_set = create_open_discovery_train_convnet(neighbours_data, test_hops, int(args.train_set_size), neg_ratio, args.train_filename, all_data)
+
 if __name__ == '__main__':
     sys.exit(main(sys.argv))

@@ -1,0 +1,5 @@
+--------
+/home/gamal/Documents/lp_lion_integration/node2vec_cpp/node2vec.Err
+Wed Feb 21 16:59:57 2018
+Execution stopped: IsInt(false, 0, 0, Val) [Reason:'MESH:C084079'], file ../../glib-core/dt.h, line 578
+--------

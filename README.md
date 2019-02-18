@@ -6,7 +6,7 @@ The shell file contains the steps to automate the experiments. The .py files are
 
 The LINE folder contains implementations of the LINE algorithm obtained freely on the internet.
 
-The *Models* folder contains the files for the models used. The data files used were too large for Github's file size limit. They can be found at: 
+The *Models* folder contains the files for the models used. The data files used were too large for Github's file size limit. They can be found at:
 
 The parameters that each script accepts are in the files.
 
