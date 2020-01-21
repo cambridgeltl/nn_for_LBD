@@ -6,7 +6,9 @@ The shell file contains the steps to automate the experiments. The .py files are
 
 The LINE folder contains implementations of the LINE algorithm obtained freely on the internet.
 
-The *Models* folder contains the files for the models used. The data files used were too large for Github's file size limit. They can be found at:
+The *Models* folder contains the files for the models used. 
+
+The data files used were too large for Github's file size limit. The Cancer landmark discovery and Swanson discovery datasets are the same as those used in the LION LBD paper and can be found at: http://lbd.lionproject.net/downloads. The BioGRID dataset used is from https://downloads.thebiogrid.org/BioGRID. Since the BioGRID dataset updates frequently, the exact dataset we used (version 3.4.167) would likely be archived; so can be found at: https://downloads.thebiogrid.org/BioGRID/Release-Archive/.
 
 The parameters that each script accepts are in the files.
 
