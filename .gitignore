@@ -6,7 +6,6 @@
 *.edgelist
 *.csv
 *.embeddings
-*.bin
 *~
 
 # Byte-compiled / optimized / DLL files
